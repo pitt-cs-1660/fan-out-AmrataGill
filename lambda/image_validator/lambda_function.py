@@ -12,51 +12,57 @@ def is_valid_image(key):
     return ext in VALID_EXTENSIONS
 
 def lambda_handler(event, context):
-    """
-    validates that uploaded files are images.
-    raises exception for invalid files (triggers DLQ).
-
-    for valid files, copies the object to the processed/valid/ prefix
-    in the same bucket so grading can verify output via S3.
-
-    event structure (SNS wraps the S3 event):
-    {
-        "Records": [{
-            "Sns": {
-                "Message": "{\"Records\":[{\"s3\":{...}}]}"  # this is a JSON string!
-            }
-        }]
-    }
-
-    required log format:
-        [VALID] {key} is a valid image file
-        [INVALID] {key} is not a valid image type
-
-    required S3 output (valid files only):
-        copies the file to processed/valid/{filename}
-        e.g. uploads/test.jpg -> processed/valid/test.jpg
-
-    important: to trigger the DLQ, you must raise an exception (not return an error).
-    """
-
     print("=== image validator invoked ===")
+    
+    # Debug: Print the entire event
+    print(f"DEBUG: Full event structure:")
+    print(json.dumps(event, indent=2))
+    
+    # Check if Records exists
+    if 'Records' not in event:
+        print("ERROR: No 'Records' key in event!")
+        return {'statusCode': 400, 'body': 'No Records in event'}
+    
+    print(f"DEBUG: Number of records: {len(event['Records'])}")
+    
+    try:
+        for record in event['Records']:
+            sns_message = record['Sns']['Message']
+            print(f"DEBUG: SNS Message (first 200 chars): {sns_message[:200]}")
+            
+            s3_event = json.loads(sns_message)
+            print(f"DEBUG: S3 event has {len(s3_event.get('Records', []))} records")
 
-    # todo: loop through event['Records']
-    # todo: for each record, get the SNS message string from record['Sns']['Message']
-    # todo: parse the SNS message string as JSON to get the S3 event
-    # todo: loop through the S3 event's 'Records'
-    # todo: extract bucket name from s3_record['s3']['bucket']['name']
-    # todo: extract object key from s3_record['s3']['object']['key']
-    # todo: use is_valid_image() to check the file extension
-    # todo: if valid:
-    #         - print the [VALID] message: print(f"[VALID] {key} is a valid image file")
-    #         - get the filename from the key (e.g. "uploads/test.jpg" -> "test.jpg")
-    #           hint: use key.split('/')[-1]
-    #         - copy the object to processed/valid/{filename}
-    #           hint: s3.copy_object(Bucket=bucket, Key=f"processed/valid/{filename}",
-    #                 CopySource={'Bucket': bucket, 'Key': key})
-    # todo: if invalid:
-    #         - print the [INVALID] message: print(f"[INVALID] {key} is not a valid image type")
-    #         - raise ValueError to trigger DLQ
+            for s3_record in s3_event['Records']:
+                bucket = s3_record['s3']['bucket']['name']
+                key = s3_record['s3']['object']['key']
+                
+                print(f"DEBUG: Checking file: {key}")
+                print(f"DEBUG: Is valid image? {is_valid_image(key)}")
 
-    return {'statusCode': 200, 'body': 'validation complete'}
+                if is_valid_image(key):
+                    print(f"[VALID] {key} is a valid image file")
+                    
+                    filename = key.split('/')[-1]
+                    output_key = f"processed/valid/{filename}"
+                    
+                    print(f"DEBUG: About to copy to s3://{bucket}/{output_key}")
+                    
+                    s3.copy_object(
+                        Bucket=bucket,
+                        Key=output_key,
+                        CopySource={'Bucket': bucket, 'Key': key}   
+                    )
+                    
+                    print(f"DEBUG: Successfully copied file!")
+                else:
+                    print(f"[INVALID] {key} is not a valid image type")
+                    raise ValueError(f"Invalid image type: {key}")
+
+        return {'statusCode': 200, 'body': 'validation complete'}
+        
+    except Exception as e:
+        print(f"EXCEPTION: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"TRACEBACK:\n{traceback.format_exc()}")
+        raise
